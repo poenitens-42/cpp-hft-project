@@ -67,7 +67,7 @@ make -j$(nproc)
 
 ## Platform
 
-- OS: Ubuntu 24 (WSL2)
+- OS: Ubuntu 24.04.4 LTS (bare metal, external 1TB drive — no hypervisor)
 - CPU: AMD Ryzen 7 7730U (constant_tsc, nonstop_tsc, rdtscp, avx2)
 - Compiler: GCC 13.3.0, C++20
 - Networking: ASIO 1.24.0 (standalone, no Boost)
