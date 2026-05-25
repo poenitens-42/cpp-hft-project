@@ -1,0 +1,21 @@
+# Build artifacts
+build/
+.cache/
+
+# Accidental cmake-in-src artifacts
+src/CMakeFiles/
+src/_deps/
+src/CMakeCache.txt
+src/Makefile
+src/cmake_install.cmake
+src/compile_commands.json
+src/bench_client
+src/hft_app
+src/order_book_test
+
+# General
+*.o
+*.a
+*.so
+*.out
+cd
