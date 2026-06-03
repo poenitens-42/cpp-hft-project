@@ -6,54 +6,25 @@
 #include <iostream>
 #include <optional>
 
-// ============================================================
+
 // hft::LimitOrderBook
 //
 // Circular array LOB for ES futures (tick = 0.25)
 //
-// Design decisions vs book (exploring_circular_array.hpp):
-//
-// 1. int64_t price_ticks instead of double
-//    Book uses double arithmetic for index math — accumulates
-//    FP error at high prices. We convert once at boundary,
-//    all internal logic is integer.
-//
-// 2. No raw pointers into std::vector
-//    Book stores Order* into vector storage — invalidated if
-//    vector ever reallocates. We use integer indices only.
-//
-// 3. FIFO queue per price level (price-time priority)
-//    Book stores one Order per level — overwrites on insert.
-//    Real LOB requires FIFO within a price level.
-//
-// 4. Single templated Side struct — no code duplication
-//    Book duplicates ~100 lines of bid/offer logic verbatim.
-//    We parameterise direction via a constexpr bool.
-//
-// 5. DEPTH = power of 2 → index = ticks & (DEPTH-1)
-//    Bitmask replaces modulo — single cycle vs ~20-40 cycles.
-//
-// Complexity:
-//   add_order    O(1)
-//   cancel_order O(1) amortised (linear scan within level — max 8)
-//   best_bid     O(1)
-//   best_ask     O(1)
-// ============================================================
+
 
 namespace hft {
 
-// ------------------------------------------------------------
+
 // Constants — ES futures
-// ------------------------------------------------------------
 static constexpr double   ES_TICK_SIZE  = 0.25;
 static constexpr int64_t  DEPTH         = 1024;       // must be power of 2
 static constexpr int64_t  DEPTH_MASK    = DEPTH - 1;  // bitmask for fast modulo
 static constexpr int64_t  ORDERS_PER_LEVEL = 8;       // max orders at one price
 
-// ------------------------------------------------------------
+
 // Order
 // POD struct — no virtual, no heap, fits in one cache line (48B)
-// ------------------------------------------------------------
 struct Order {
     int64_t  order_id  = 0;
     int64_t  price_ticks = 0;   // price in integer ticks (price / ES_TICK_SIZE)
