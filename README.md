@@ -4,15 +4,13 @@ A low-latency HFT infrastructure project in C++20, built around async networking
 
 ## Architecture
 
-include/
-server.hpp          — ASIO C++20 coroutine TCP server, Nagle disabled
-order_book.hpp      — Circular array limit order book (ES futures)
-src/
-main.cpp            — io_context thread pool, HFTServer wiring
-bench_client.cpp    — rdtsc latency benchmark client
-order_book_test.cpp — LOB correctness tests
-
-
+    include/
+      server.hpp          — ASIO C++20 coroutine TCP server, Nagle disabled
+      order_book.hpp      — Circular array limit order book (ES futures)
+    src/
+      main.cpp            — io_context thread pool, HFTServer wiring
+      bench_client.cpp    — rdtsc latency benchmark client
+      order_book_test.cpp — LOB correctness tests
 
 ## Components
 
@@ -43,27 +41,26 @@ order_book_test.cpp — LOB correctness tests
 
 ## Build
 
-```bash
-mkdir build && cd build
-cmake -DCMAKE_BUILD_TYPE=Release ..
-make -j$(nproc)
+    mkdir build && cd build
+    cmake -DCMAKE_BUILD_TYPE=Release ..
+    make -j$(nproc)
 
-# Run server
-./hft_app
+    # Run server
+    ./hft_app
 
-# Run benchmark (separate terminal)
-./bench_client
+    # Run benchmark (separate terminal)
+    ./bench_client
 
-# Run order book tests
-./order_book_test
-```
+    # Run order book tests
+    ./order_book_test
 
 ## Design Notes
 
-- `-ffast-math` intentionally excluded — breaks IEEE 754, dangerous in financial math
-- No `using namespace` in headers — prevents TU pollution
+- -ffast-math intentionally excluded — breaks IEEE 754, dangerous in financial math
+- No using namespace in headers — prevents TU pollution
 - Explicit CMake sources — no GLOB (cmake won't detect new files without re-run)
-- All benchmarks run with `sudo chrt -f 50` for SCHED_FIFO RT priority
+- All benchmarks run with sudo chrt -f 50 for SCHED_FIFO RT priority
+- Standard Linux TCP stack — no kernel bypass (DPDK noted as future work)
 
 ## Platform
 
@@ -71,3 +68,11 @@ make -j$(nproc)
 - CPU: AMD Ryzen 7 7730U (constant_tsc, nonstop_tsc, rdtscp, avx2)
 - Compiler: GCC 13.3.0, C++20
 - Networking: ASIO 1.24.0 (standalone, no Boost)
+
+## Roadmap
+
+- [ ] Matching engine (price-time priority, partial fills, IOC/FOK)
+- [ ] Market data feed parser (ITCH protocol)
+- [ ] Lock-free SPSC queue for order pipeline
+- [ ] Core pinning and NUMA-aware thread placement
+- [ ] DPDK kernel bypass (after kernel proven as bottleneck)
