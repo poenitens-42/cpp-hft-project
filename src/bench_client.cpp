@@ -13,31 +13,10 @@
 
 using asio::ip::tcp;
 
-// ------------------------------------------------------------
 // rdtsc — Read Time Stamp Counter
 //
 // Returns CPU cycle count since last reset.
-// CRITICAL CAVEATS (know these for interviews):
-//
-// 1. NOT wall-clock time. Must calibrate cycles -> nanoseconds
-//    via known-duration sleep (we do this below).
-//
-// 2. Out-of-order execution: CPU can reorder instructions across
-//    the rdtsc boundary. Fix: use rdtscp (serialising read) or
-//    wrap with lfence/mfence.
-//
-// 3. TSC may not be invariant on older CPUs (frequency scales
-//    with power states). Modern Intel/AMD have invariant TSC
-//    — check /proc/cpuinfo for "constant_tsc" and "nonstop_tsc".
-//
-// 4. Cross-core TSC skew: if the thread migrates to another core
-//    mid-measurement, timestamps are incomparable. Fix: pin thread
-//    to a core (pthread_setaffinity). We don't do that here but
-//    note it.
-//
-// 5. rdtscp also returns the core ID in rcx — useful for
-//    detecting cross-core migration during a measurement.
-// ------------------------------------------------------------
+
 
 // Serialising read: lfence ensures all prior instructions retire
 // before the counter is read. Use this for START of interval.
