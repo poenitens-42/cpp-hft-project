@@ -7,8 +7,7 @@
 //
 // Exercises the LOB with realistic ES futures scenarios.
 // Not a unit test framework — readable assertions that print
-// what's happening. Good for walking through in an interview.
-// ============================================================
+
 
 using namespace hft;
 
