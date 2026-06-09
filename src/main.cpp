@@ -6,7 +6,7 @@
 #include <vector>
 
 int main() {
-    const unsigned int num_threads = std::max(2u, std::thread::hardware_concurrency() / 2);
+    const unsigned int num_threads = 2
     constexpr uint16_t PORT = 9001;
 
     try {

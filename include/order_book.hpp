@@ -128,6 +128,7 @@ struct Side {
     // Asks: lowest  price = best
     int64_t best_idx  = -1;
     int64_t base_tick = -1; // tick value at index 0 (anchor)
+	std::atomic<uint64_t> rescan_count{0};
 
     // ------------------------------------------------------------
     // tick_to_index — O(1) circular mapping
@@ -226,7 +227,10 @@ struct Side {
     void rescan_best() {
         if (best_idx == -1) return;
 
-        int64_t start = best_idx;
+        // In Side<IsBid> struct — add this as a member variable:
+        ++rescan_count;
+
+		int64_t start = best_idx;
         for (int64_t i = 1; i < DEPTH; ++i) {
             int64_t candidate;
             if constexpr (IsBid)

@@ -7,59 +7,57 @@
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
-#include <string_view>
 
-// ------------------------------------------------------------
-// Explicit imports — NEVER "using namespace" in a header.
-// It leaks into every translation unit that includes this file,
-// causing silent name collisions that are hell to debug.
-// ------------------------------------------------------------
+#include "order_book.hpp"
+#include "messages.hpp"
+
 using asio::awaitable;
 using asio::co_spawn;
 using asio::detached;
 using asio::use_awaitable;
 using asio::ip::tcp;
 namespace this_coro = asio::this_coro;
-
-// Bring in ||, && operators for awaitables (used in composed ops)
-using namespace asio::experimental::awaitable_operators; // OK inside .cpp, not ideal in .hpp
-// TODO: move implementation to server.cpp to avoid this leaking
+using namespace asio::experimental::awaitable_operators;
 
 // ------------------------------------------------------------
-// Message buffer sizing
-// Fix: replaced raw char[256] with a typed array.
-//   - std::array gives bounds safety and is zero-overhead vs raw array
-//   - 4096 bytes fits most FIX/SBE market data messages
-//   - For production: use a pre-allocated ring buffer (no heap alloc)
+// RDTSC helpers — server side
+//
+// Same serialisation discipline as bench_client:
+//   lfence + rdtsc  for START (prevents speculative reads before)
+//   rdtscp          for END   (implicitly serialises after store)
 // ------------------------------------------------------------
-static constexpr std::size_t kReadBufSize = 4096;
+inline uint64_t tsc_start() {
+    uint32_t lo, hi;
+    __asm__ volatile (
+        "lfence\n\t"
+        "rdtsc\n\t"
+        : "=a"(lo), "=d"(hi) :: "memory"
+    );
+    return (static_cast<uint64_t>(hi) << 32) | lo;
+}
+
+inline uint64_t tsc_end() {
+    uint32_t lo, hi, aux;
+    __asm__ volatile (
+        "rdtscp\n\t"
+        : "=a"(lo), "=d"(hi), "=c"(aux) :: "memory"
+    );
+    return (static_cast<uint64_t>(hi) << 32) | lo;
+}
 
 class HFTServer {
 public:
     HFTServer(asio::io_context& ctx, uint16_t port)
         : ctx_(ctx),
           acceptor_(ctx, tcp::endpoint(tcp::v4(), port))
-    {
-        // SO_REUSEADDR is set by default in ASIO acceptor — good.
-        // For production also consider: TCP_NODELAY on client sockets (Nagle off).
-    }
+    {}
 
-    // Accept loop — runs until io_context is stopped
     awaitable<void> start() {
-        // No std::cerr in hot path in production.
-        // Here it's fine — accept loop is cold path.
         try {
             for (;;) {
                 tcp::socket client = co_await acceptor_.async_accept(use_awaitable);
-
-                // Disable Nagle's algorithm: critical for low-latency.
-                // Nagle batches small packets — disastrous for HFT tick-by-tick data.
                 client.set_option(tcp::no_delay(true));
-
                 co_spawn(ctx_, handle_client(std::move(client)), detached);
-                // NOTE: detached means exceptions thrown OUTSIDE our try/catch
-                // in handle_client are silently dropped.
-                // Production alternative: co_spawn(..., [](std::exception_ptr e){ ... })
             }
         } catch (const std::exception& e) {
             std::cerr << "[Server] Accept error: " << e.what() << "\n";
@@ -67,39 +65,82 @@ public:
     }
 
 private:
+    // ----------------------------------------------------------
+    // handle_client
+    //
+    // Each connection gets its own LimitOrderBook instance.
+    // In production: shared book with lock-free SPSC per session.
+    // For benchmarking: per-connection book avoids lock contention
+    // and gives clean isolated measurements.
+    // ----------------------------------------------------------
     awaitable<void> handle_client(tcp::socket client) {
+        hft::LimitOrderBook book;
+
+        // No welcome message — removes one extra read_some() on client side
+        // and eliminates a spurious RTT from the first measurement.
+
+        std::array<char, hft::wire::OrderMsg::SIZE> recv_buf{};
+        hft::wire::AckMsg ack{};
+
         try {
-            // Greet client
-            constexpr std::string_view welcome = "Connected to HFT async server\n";
-            co_await asio::async_write(
-                client, asio::buffer(welcome.data(), welcome.size()), use_awaitable);
-
-            // Read buffer — stack allocated, fixed size, no heap
-            std::array<char, kReadBufSize> buf{};
-
             for (;;) {
-                std::size_t n = co_await client.async_read_some(
-                    asio::buffer(buf), use_awaitable);
+                // --- Receive exactly one OrderMsg ---
+                std::size_t received = 0;
+                while (received < hft::wire::OrderMsg::SIZE) {
+                    std::size_t n = co_await client.async_read_some(
+                        asio::buffer(recv_buf.data() + received,
+                                     hft::wire::OrderMsg::SIZE - received),
+                        use_awaitable);
+                    received += n;
+                }
 
-                // Fix: was std::cout (synchronous, mutex-locked) in hot path.
-                // For production: use a lock-free spsc queue to a logger thread.
-                // For now, keep it but be aware of the latency cost.
-                std::string_view received{buf.data(), n};
+                // --- Parse ---
+                hft::wire::OrderMsg msg{};
+                std::memcpy(&msg, recv_buf.data(), sizeof(msg));
 
-                // Echo back — in a real feed handler you'd parse/dispatch here
+                // --- RDTSC t1: just before LOB call ---
+                uint64_t t1 = tsc_start();
+
+                // --- Hot path: order book operation ---
+                bool accepted = book.add_order(
+                    static_cast<int64_t>(msg.order_id),
+                    msg.price,
+                    msg.quantity,
+                    msg.is_bid != 0
+                );
+
+                // --- RDTSC t2: just after LOB call ---
+                uint64_t t2 = tsc_end();
+
+				if (msg.order_id % 10000 == 0) {
+   					 std::cerr << "[LOB] order=" << msg.order_id
+            			  << " rescan bids=" << book.bids.rescan_count
+            			  << " asks=" << book.asks.rescan_count << "\n";
+				}
+				
+
+                // --- Build AckMsg ---
+                ack.order_id = msg.order_id;
+                ack.t1       = t1;
+                ack.t2       = t2;
+                ack.accepted = accepted ? 1 : 0;
+
+                // --- Send AckMsg ---
                 co_await asio::async_write(
-                    client, asio::buffer(buf.data(), n), use_awaitable);
-            }
-        } catch (const asio::error_code& ec) {
-            // EOF / connection reset — normal disconnect, not an error
-            if (ec != asio::error::eof && ec != asio::error::connection_reset) {
-                std::cerr << "[Client] Unexpected error: " << ec.message() << "\n";
+                    client,
+                    asio::buffer(&ack, hft::wire::AckMsg::SIZE),
+                    use_awaitable);
             }
         } catch (const std::exception& e) {
-            std::cerr << "[Client] Disconnected: " << e.what() << "\n";
+            // EOF on disconnect is normal — only log unexpected errors
+            std::string_view msg = e.what();
+            if (msg.find("End of file") == std::string_view::npos &&
+                msg.find("connection reset") == std::string_view::npos) {
+                std::cerr << "[Client] Disconnected: " << e.what() << "\n";
+            }
         }
     }
 
     asio::io_context& ctx_;
-    tcp::acceptor    acceptor_;
+    tcp::acceptor     acceptor_;
 };
