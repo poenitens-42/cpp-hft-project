@@ -2,6 +2,7 @@
 
 #include <array>
 #include <atomic>
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
