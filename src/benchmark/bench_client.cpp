@@ -12,7 +12,7 @@
 #include <vector>
 #include <cmath>
 
-#include "messages.hpp"
+#include "protocol/messages.hpp"
 
 using asio::ip::tcp;
 

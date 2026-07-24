@@ -8,9 +8,8 @@
 #include <cstdint>
 #include <iostream>
 
-#include "order_book.hpp"
-#include "messages.hpp"
-
+#include "engine/order_book.hpp"
+#include "protocol/messages.hpp"
 using asio::awaitable;
 using asio::co_spawn;
 using asio::detached;

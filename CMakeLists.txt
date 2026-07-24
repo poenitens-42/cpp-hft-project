@@ -13,15 +13,6 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
 endif()
 
-# ------------------------------------------------------------
-# Compiler flags
-# NOTE: -ffast-math is intentionally EXCLUDED. (because it can reorder Floating point ops and treats Nan/Inf values incorrectly)
-#        so its an instant death in computing PnL values 
-#
-# -fno-plt:         avoids PLT indirection for external calls (faster)
-# -fomit-frame-pointer: frees one register, acceptable in release
-# -march=native:    enables AVX2/AVX-512 if your CPU supports it (better if it does) 
-# ------------------------------------------------------------
 set(HFT_COMPILE_OPTIONS
     -O3
     -march=native
@@ -53,26 +44,39 @@ set(HFT_SOURCES
     # Add new translation units here explicitly:
     # src/order_book.cpp
     # src/market_data.cpp
+	src/analytics/kdb_client.cpp
+	src/tests/kdb_test.cpp
 )
 
 add_executable(hft_app ${HFT_SOURCES})
 
 target_compile_options(hft_app PRIVATE ${HFT_COMPILE_OPTIONS})
 
-target_include_directories(hft_app PRIVATE include                            # your own headers (server.hpp etc.)
-	                        ${asio_SOURCE_DIR}/asio/include    # ASIO headers
-						   )
+target_include_directories(hft_app PRIVATE
+    include
+    third_party/kdb 
+	${asio_SOURCE_DIR}/asio/include
+)
 
 # ASIO: standalone mode (no Boost), enable coroutines
 target_compile_definitions(hft_app PRIVATE
     ASIO_STANDALONE
     ASIO_HAS_CO_AWAIT
+	KXVER=3
+)
+target_link_libraries(hft_app PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/kdb/c.o
 )
 
-add_executable(bench_client src/bench_client.cpp)
+add_executable(bench_client src/benchmark/bench_client.cpp)
 target_compile_options(bench_client PRIVATE ${HFT_COMPILE_OPTIONS})
 target_include_directories(bench_client PRIVATE include ${asio_SOURCE_DIR}/asio/include)
 target_compile_definitions(bench_client PRIVATE ASIO_STANDALONE ASIO_HAS_CO_AWAIT)
 
-add_executable(order_book_test src/order_book_test.cpp)
+add_executable(order_book_test
+    src/tests/order_book_test.cpp
+)
 target_include_directories(order_book_test PRIVATE include)
+target_compile_definitions(kdb_test PRIVATE
+    KXVER=3
+)
