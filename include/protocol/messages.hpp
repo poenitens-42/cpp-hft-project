@@ -11,8 +11,15 @@
 // IMPORTANT: both sides must be compiled with the same struct layout.
 // We use __attribute__((packed)) to eliminate any padding surprises,
 // but since all fields are naturally aligned this makes no difference
-// in practice — it's defensive documentation.
+
 namespace hft::wire {
+/* Msg - Type to distinguish from ADD and CANCEL ( needed otherwise its just monotonically adding which 
+ * will saturate the price-levels */ 
+
+	enum class MsgType : uint8_t {
+		 ADD = 0,
+		 CANCEL = 1,
+	};
 
 // ------------------------------------------------------------
 // OrderMsg — client → server (64 bytes = 1 cache line)
@@ -21,8 +28,9 @@ struct __attribute__((packed)) OrderMsg {
     uint64_t order_id;       // unique per message
     double   price;          // real price (e.g. 4500.25)
     int32_t  quantity;       // number of contracts
-    uint8_t  is_bid;         // 1 = bid, 0 = ask
-    uint8_t  pad[43];        // padding to 64 bytes
+    uint8_t  is_bid;         // 1 = bid , 0 = ASK 
+	uint8_t type ;           // ADD or CANCEL 
+    uint8_t  pad[42];        // padding to 64 bytes
 
     static constexpr std::size_t SIZE = 64;
 };

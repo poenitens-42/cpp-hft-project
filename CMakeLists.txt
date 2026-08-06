@@ -35,6 +35,19 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(asio)
 
 # ------------------------------------------------------------
+# kdb+ C API static object — must exist locally, see README
+# (third_party/kdb/c.o is NOT committed; download per-platform
+#  from https://github.com/KxSystems/kdb/tree/master/c/c)
+# ------------------------------------------------------------
+set(KDB_C_OBJ ${CMAKE_CURRENT_SOURCE_DIR}/third_party/kdb/c.o)
+if(NOT EXISTS ${KDB_C_OBJ})
+    message(FATAL_ERROR
+        "Missing ${KDB_C_OBJ}. Download the platform c.o from "
+        "https://github.com/KxSystems/kdb/tree/master/c/c and place it "
+        "at third_party/kdb/c.o before configuring.")
+endif()
+
+# ------------------------------------------------------------
 # Sources — explicit list, NOT GLOB
 # GLOB anti-pattern: cmake won't re-run when you add a new .cpp,
 # so the build silently misses the file until you re-cmake manually.
@@ -44,28 +57,17 @@ set(HFT_SOURCES
     # Add new translation units here explicitly:
     # src/order_book.cpp
     # src/market_data.cpp
-	src/analytics/kdb_client.cpp
-	src/tests/kdb_test.cpp
-)
+     )
 
 add_executable(hft_app ${HFT_SOURCES})
-
 target_compile_options(hft_app PRIVATE ${HFT_COMPILE_OPTIONS})
-
 target_include_directories(hft_app PRIVATE
     include
-    third_party/kdb 
-	${asio_SOURCE_DIR}/asio/include
+    ${asio_SOURCE_DIR}/asio/include
 )
-
-# ASIO: standalone mode (no Boost), enable coroutines
 target_compile_definitions(hft_app PRIVATE
     ASIO_STANDALONE
     ASIO_HAS_CO_AWAIT
-	KXVER=3
-)
-target_link_libraries(hft_app PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/kdb/c.o
 )
 
 add_executable(bench_client src/benchmark/bench_client.cpp)
@@ -77,6 +79,22 @@ add_executable(order_book_test
     src/tests/order_book_test.cpp
 )
 target_include_directories(order_book_test PRIVATE include)
+
+# ------------------------------------------------------------
+# kdb+ smoke test — its OWN executable, separate from hft_app,i
+# so it doesn't collide with main.cpp's main() and doesn't force
+# every hft_app source to depend on k.h / KXVER.
+# ------------------------------------------------------------
+add_executable(kdb_test
+    src/tests/kdb_test.cpp
+    src/analytics/kdb_client.cpp
+)
+target_compile_options(kdb_test PRIVATE ${HFT_COMPILE_OPTIONS})
+target_include_directories(kdb_test PRIVATE
+    include
+    third_party/kdb
+)
 target_compile_definitions(kdb_test PRIVATE
     KXVER=3
 )
+target_link_libraries(kdb_test PRIVATE ${KDB_C_OBJ})

@@ -69,41 +69,15 @@ double percentile(const std::vector<double>& sorted, double p) {
 }
 
 // ------------------------------------------------------------
-// Randomised order generator
-//
-// Simulates realistic ES futures order flow:
-//   - Price: random walk around 4500.00, ±50 ticks (±12.50 pts)
-//   - Qty:   1-10 contracts (realistic retail/prop sizes)
-//   - Side:  50/50 bid/ask
-//
-// We pre-generate all orders before the hot loop to avoid
-// polluting latency measurements with RNG overhead.
+// RestingOrder — an order we believe is currently live on the
+// server's book. Only populated from real ack.accepted==1
+// responses, never assumed — the client's model of book state
+// must track ground truth, not its own intent, or a cancel
+// could reference an order the server actually rejected.
 // ------------------------------------------------------------
-struct OrderGen {
-    std::vector<hft::wire::OrderMsg> orders;
-
-    explicit OrderGen(int n) {
-        orders.reserve(n);
-
-        std::mt19937_64 rng{42}; // fixed seed = reproducible runs
-        // Price: 4480.00 to 4520.00 in 0.25 increments = 160 ticks
-        // We pick tick offsets and convert to price
-        std::uniform_int_distribution<int> tick_dist(-80, 80); // ±80 ticks from 4500
-        std::uniform_int_distribution<int> qty_dist(1, 10);
-        std::uniform_int_distribution<int> side_dist(0, 1);
-
-        static constexpr double BASE_PRICE = 4500.00;
-        static constexpr double TICK_SIZE  = 0.25;
-
-        for (int i = 0; i < n; ++i) {
-            hft::wire::OrderMsg msg{};
-            msg.order_id = static_cast<uint64_t>(i + 1);
-            msg.price    = BASE_PRICE + tick_dist(rng) * TICK_SIZE;
-            msg.quantity = qty_dist(rng);
-            msg.is_bid   = static_cast<uint8_t>(side_dist(rng));
-            orders.push_back(msg);
-        }
-    }
+struct RestingOrder {
+    uint64_t order_id;
+    double   price;
 };
 
 // ------------------------------------------------------------
@@ -115,6 +89,17 @@ static constexpr int      TOTAL_MSGS   = WARMUP_MSGS + BENCH_MSGS;
 static constexpr char     SERVER_IP[]  = "127.0.0.1";
 static constexpr uint16_t SERVER_PORT  = 9001;
 
+// Target steady-state resting depth per side. Kept well under the
+// hard per-side capacity (161 ticks * ORDERS_PER_LEVEL=8 = 1288)
+// so per-tick collisions stay a rare, legitimate edge case rather
+// than the dominant path. At target=300 across 161 ticks, average
+// occupancy is ~1.9 orders/tick, so hitting a fully-loaded single
+// tick (8/8) by chance is uncommon but not impossible — realistic.
+static constexpr std::size_t TARGET_RESTING_PER_SIDE = 300;
+
+static constexpr double   BASE_PRICE = 4500.00;
+static constexpr double   TICK_SIZE  = 0.25;
+
 int main() {
     std::cout << "[Bench] Calibrating TSC...\n";
     double ghz = calibrate_tsc_ghz();
@@ -125,10 +110,6 @@ int main() {
         std::cerr << "[Bench] Calibration looks wrong — check constant_tsc\n";
         return 1;
     }
-
-    // Pre-generate all orders — no RNG in hot loop
-    std::cout << "[Bench] Pre-generating " << TOTAL_MSGS << " randomised orders...\n";
-    OrderGen gen{TOTAL_MSGS};
 
     // ------------------------------------------------------------
     // Connect
@@ -147,10 +128,35 @@ int main() {
         return 1;
     }
 
-    // No welcome message to drain anymore — server sends nothing on connect
-
     std::cout << "[Bench] Connected. Running " << WARMUP_MSGS << " warmup + "
-              << BENCH_MSGS << " measured messages...\n";
+              << BENCH_MSGS << " measured messages (add/cancel churn, target depth="
+              << TARGET_RESTING_PER_SIDE << "/side)...\n";
+
+    // ------------------------------------------------------------
+    // Workload generator state
+    //
+    // NOTE: unlike the original all-adds version, this can't be
+    // fully pre-generated — a CANCEL must reference an order the
+    // server actually confirmed as resting, which is only known
+    // at runtime from ack.accepted. The RNG draws + vector
+    // bookkeeping below are O(1) and nanosecond-scale; negligible
+    // next to microsecond-scale RTT, so they don't materially
+    // pollute the latency measurement the way a full pre-generation
+    // pass avoiding RNG entirely was originally trying to protect.
+    // ------------------------------------------------------------
+    std::mt19937_64 rng{42}; // fixed seed = reproducible runs
+    std::uniform_int_distribution<int>    tick_dist(-80, 80);
+    std::uniform_int_distribution<int>    qty_dist(1, 10);
+    std::uniform_int_distribution<int>    side_dist(0, 1);
+    std::uniform_real_distribution<double> action_roll(0.0, 1.0);
+
+    std::vector<RestingOrder> resting_bids, resting_asks;
+    resting_bids.reserve(TARGET_RESTING_PER_SIDE * 2);
+    resting_asks.reserve(TARGET_RESTING_PER_SIDE * 2);
+
+    uint64_t next_order_id = 1;
+    uint64_t adds_sent = 0, adds_rejected = 0;
+    uint64_t cancels_sent = 0, cancels_rejected = 0;
 
     // ------------------------------------------------------------
     // Hot loop
@@ -167,7 +173,40 @@ int main() {
     uint32_t core_id = 0;
 
     for (int i = 0; i < TOTAL_MSGS; ++i) {
-        const auto& msg = gen.orders[i];
+        bool is_bid = side_dist(rng) != 0;
+        auto& resting = is_bid ? resting_bids : resting_asks;
+
+        // Force add below half-target (bootstraps the book), force
+        // cancel at/above target, coin-flip in between — keeps depth
+        // oscillating in a stable band instead of drifting to either
+        // extreme (which is what a fixed cancel-probability would do).
+        bool is_cancel;
+        if (resting.size() >= TARGET_RESTING_PER_SIDE) {
+            is_cancel = true;
+        } else if (resting.size() < TARGET_RESTING_PER_SIDE / 2) {
+            is_cancel = false;
+        } else {
+            is_cancel = action_roll(rng) < 0.5;
+        }
+
+        hft::wire::OrderMsg msg{};
+        std::size_t cancel_idx = 0; // only meaningful when is_cancel
+
+        if (is_cancel) {
+            std::uniform_int_distribution<std::size_t> pick(0, resting.size() - 1);
+            cancel_idx = pick(rng);
+            msg.order_id = resting[cancel_idx].order_id;
+            msg.price    = resting[cancel_idx].price;
+            msg.quantity = 0;
+            msg.is_bid   = is_bid ? 1 : 0;
+            msg.type     = static_cast<uint8_t>(hft::wire::MsgType::CANCEL);
+        } else {
+            msg.order_id = next_order_id++;
+            msg.price    = BASE_PRICE + tick_dist(rng) * TICK_SIZE;
+            msg.quantity = qty_dist(rng);
+            msg.is_bid   = is_bid ? 1 : 0;
+            msg.type     = static_cast<uint8_t>(hft::wire::MsgType::ADD);
+        }
 
         // --- START RTT timestamp ---
         uint64_t t0 = rdtsc_start();
@@ -186,10 +225,29 @@ int main() {
         // --- END RTT timestamp ---
         uint64_t t3 = rdtsc_end(core_id);
 
-        if (i < WARMUP_MSGS) continue;
-
-        // Parse ack
+        // Parse ack — needed every iteration (including warmup) to
+        // keep the resting-order model in sync with server ground truth.
         std::memcpy(&ack, recv_buf.data(), sizeof(ack));
+
+        if (is_cancel) {
+            ++cancels_sent;
+            if (ack.accepted) {
+                // swap-remove — order doesn't matter for a resting pool
+                resting[cancel_idx] = resting.back();
+                resting.pop_back();
+            } else {
+                ++cancels_rejected; // shouldn't normally happen — see note below
+            }
+        } else {
+            ++adds_sent;
+            if (ack.accepted) {
+                resting.push_back({msg.order_id, msg.price});
+            } else {
+                ++adds_rejected; // legitimate: that specific tick's 8 slots are full
+            }
+        }
+
+        if (i < WARMUP_MSGS) continue;
 
         // RTT = full round trip
         double rtt = static_cast<double>(t3 - t0) / ghz;
@@ -245,6 +303,18 @@ int main() {
     print_report("RTT Latency (full round-trip)", rtt_ns);
     print_report("Processing Latency (LOB only, server-side)", proc_ns);
     print_report("Network Overhead (RTT - processing)", net_ns);
+
+    std::cout << "\n========== Workload Composition ==========\n";
+    std::cout << "  Adds    sent: " << adds_sent    << "  rejected: " << adds_rejected
+               << "  (" << std::setprecision(1)
+               << (100.0 * static_cast<double>(adds_rejected) / static_cast<double>(adds_sent))
+               << "% — expected: rare, only when one specific tick's 8 slots are full)\n";
+    std::cout << "  Cancels sent: " << cancels_sent << "  rejected: " << cancels_rejected
+               << "  (should be ~0 — a non-zero count here means the client's resting-order\n"
+               << "   model drifted from server truth and is worth investigating)\n";
+    std::cout << "  Final resting depth — bids: " << resting_bids.size()
+               << "  asks: " << resting_asks.size() << "\n";
+    std::cout << "===========================================\n";
 
     std::cout << "\n[Bench] TSC core at end: " << core_id << "\n";
     std::cout << "[Bench] Note: processing latency uses server TSC directly.\n";

@@ -101,12 +101,23 @@ private:
                 uint64_t t1 = tsc_start();
 
                 // --- Hot path: order book operation ---
-                bool accepted = book.add_order(
+                bool accepted;
+				if (static_cast<hft::wire::MsgType>(msg.type) == hft::wire::MsgType::CANCEL){
+				    accepted = book.cancel_order(
                     static_cast<int64_t>(msg.order_id),
                     msg.price,
-                    msg.quantity,
-                    msg.is_bid != 0
-                );
+                    msg.is_bid != 0 );
+			}
+				else{
+					accepted = book.add_order(
+							static_cast<int64_t>(msg.order_id),
+							msg.price,
+							msg.quantity,
+							msg.is_bid != 0 
+					);
+
+
+				}
 
                 // --- RDTSC t2: just after LOB call ---
                 uint64_t t2 = tsc_end();

@@ -18,7 +18,7 @@ KdbClient::~KdbClient()
 
 bool KdbClient::connect(const std::string& host, int port)
 {
-    handle_ = khpu(host.c_str(), port, "");
+    handle_ = khpu(const_cast<char*>(host.c_str()), port, const_cast<char*>(""));
 
     return handle_ >= 0;
 }
@@ -34,6 +34,7 @@ void KdbClient::disconnect()
 
 bool KdbClient::isConnected() const
 {
+	
     return handle_ >= 0;
 }
 
@@ -42,7 +43,7 @@ bool KdbClient::execute(const std::string& query)
     if (handle_ < 0)
         return false;
 
-    K result = k(handle_, query.c_str(), (K)0);
+    K result = k(handle_,const_cast<char*> (query.c_str()), (K)0);
 
     if (!result)
         return false;
