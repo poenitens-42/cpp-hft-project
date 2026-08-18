@@ -75,10 +75,27 @@ target_compile_options(bench_client PRIVATE ${HFT_COMPILE_OPTIONS})
 target_include_directories(bench_client PRIVATE include ${asio_SOURCE_DIR}/asio/include)
 target_compile_definitions(bench_client PRIVATE ASIO_STANDALONE ASIO_HAS_CO_AWAIT)
 
+# NOTE: CMake's default Release build type injects -DNDEBUG, which
+# compiles away every assert(). These three targets are ASSERTION-BASED
+# tests, not benchmarks, so -UNDEBUG is mandatory here regardless of
+# the overall build type — otherwise they "pass" by doing nothing.
 add_executable(order_book_test
     src/tests/order_book_test.cpp
 )
+target_compile_options(order_book_test PRIVATE -UNDEBUG)
 target_include_directories(order_book_test PRIVATE include)
+
+add_executable(itch_messages_test
+    src/tests/itch_messages_test.cpp
+)
+target_compile_options(itch_messages_test PRIVATE ${HFT_COMPILE_OPTIONS} -UNDEBUG)
+target_include_directories(itch_messages_test PRIVATE include)
+
+add_executable(itch_stats
+    src/tools/itch_stats.cpp
+)
+target_compile_options(itch_stats PRIVATE ${HFT_COMPILE_OPTIONS})
+target_include_directories(itch_stats PRIVATE include)
 
 # ------------------------------------------------------------
 # kdb+ smoke test — its OWN executable, separate from hft_app,i
@@ -89,7 +106,7 @@ add_executable(kdb_test
     src/tests/kdb_test.cpp
     src/analytics/kdb_client.cpp
 )
-target_compile_options(kdb_test PRIVATE ${HFT_COMPILE_OPTIONS})
+target_compile_options(kdb_test PRIVATE ${HFT_COMPILE_OPTIONS} -UNDEBUG)
 target_include_directories(kdb_test PRIVATE
     include
     third_party/kdb
